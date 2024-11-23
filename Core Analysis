@@ -1,0 +1,584 @@
+pip install requests pandas
+
+import requests
+import pandas as pd
+import io
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Create a detailed CSV report for each station and collect speed data by vehicle class
+detailed_report = []
+station_summary = {}
+
+# Define the station IDs
+station_ids = [20010, 20011, 20016, 20017, 20018]
+
+# Define the date range from January 1, 2023, to December 31, 2023
+date_range = pd.date_range(start='2023-01-01', end='2023-12-31')
+
+# Function to fetch and process data for a given station and date
+def fetch_data_for_date(lam_id, single_date):
+    yearshort = single_date.strftime('%y')
+    day_number = single_date.strftime('%j')
+    url = f"https://tie.digitraffic.fi/api/tms/v1/history/raw/lamraw_{lam_id}_{yearshort}_{day_number}.csv"
+    response = requests.get(url)
+    
+    if response.status_code == 200:
+        df = pd.read_csv(io.StringIO(response.text), sep=';', header=None, 
+                         names=['TMS point id', 'year', 'ordinal date', 'hour', 'minute', 'second', 
+                                '1/100 second', 'length (m)', 'lane', 'direction', 'vehicle class', 
+                                'speed (km/h)', 'faulty', 'total time (technical)', 
+                                'time interval (technical)', 'queue start (technical)'])
+        
+        # Filter for records with faulty == 0
+        valid_records = df[df['faulty'] == 0]
+        
+        if not valid_records.empty:
+            record_count = len(valid_records)
+            available_date = single_date.strftime('%Y-%m-%d')
+            
+            return {
+                'Station ID': lam_id,
+                'Date': available_date,
+                'Valid Records (faulty = 0)': record_count,
+                'DataFrame': valid_records
+            }
+    else:
+        return None
+
+# Use ThreadPoolExecutor for parallel processing
+with ThreadPoolExecutor(max_workers=5) as executor:
+    futures = []
+    for lam_id in station_ids:
+        for single_date in date_range:
+            futures.append(executor.submit(fetch_data_for_date, lam_id, single_date))
+    
+    for future in as_completed(futures):
+        result = future.result()
+        if result:
+            detailed_report.append({
+                'Station ID': result['Station ID'],
+                'Date': result['Date'],
+                'Valid Records (faulty = 0)': result['Valid Records (faulty = 0)']
+            })
+            
+            # Update station summary
+            lam_id = result['Station ID']
+            if lam_id not in station_summary:
+                station_summary[lam_id] = {
+                    'Total Valid Records (faulty = 0)': 0,
+                    'Available Dates': []
+                }
+            station_summary[lam_id]['Total Valid Records (faulty = 0)'] += result['Valid Records (faulty = 0)']
+            station_summary[lam_id]['Available Dates'].append(result['Date'])
+
+# Convert the detailed report to a DataFrame and save to CSV
+detailed_report_df = pd.DataFrame(detailed_report)
+detailed_report_file = 'detailed_valid_record_counts.csv'
+detailed_report_df.to_csv(detailed_report_file, index=False)
+
+print(f"Detailed report for valid records saved to '{detailed_report_file}'")
+print(detailed_report_df.head())
+
+import requests
+import pandas as pd
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+import io
+
+# Headers for the CSV data
+headers = [
+    'TMS point id', 'year', 'ordinal date', 'hour', 'minute', 'second',
+    '1/100 second', 'length (m)', 'lane', 'direction', 'vehicle class',
+    'speed (km/h)', 'faulty (0=valid record, 1=faulty record)',
+    'total time (technical)', 'time interval (technical)', 'queue start (technical)'
+]
+
+vehicle_class_speeds = {}
+
+# Function to fetch data and process speeds for a specific station and date
+def process_speed_data(lam_id, date):
+    yearshort = date[2:4]
+    day_number = datetime.strptime(date, "%Y-%m-%d").strftime('%j')
+    url = f"https://tie.digitraffic.fi/api/tms/v1/history/raw/lamraw_{lam_id}_{yearshort}_{day_number}.csv"
+    response = requests.get(url)
+    
+    if response.status_code == 200:
+        df = pd.read_csv(io.StringIO(response.text), sep=';', header=None, names=headers)
+        
+        # Filter out valid (non-faulty) records and group by vehicle class
+        valid_data = df[df['faulty (0=valid record, 1=faulty record)'] == 0]
+        
+        vehicle_class_speed_temp = {}
+        for vehicle_class, group in valid_data.groupby('vehicle class'):
+            if vehicle_class not in vehicle_class_speed_temp:
+                vehicle_class_speed_temp[vehicle_class] = []
+            vehicle_class_speed_temp[vehicle_class].extend(group['speed (km/h)'])
+        
+        return vehicle_class_speed_temp
+    else:
+        return None
+
+# Use ThreadPoolExecutor for parallel data fetching
+with ThreadPoolExecutor(max_workers=5) as executor:
+    futures = []
+    for lam_id, data in station_summary.items():
+        available_dates = data['Available Dates']
+        for date in available_dates:
+            futures.append(executor.submit(process_speed_data, lam_id, date))
+    
+    for future in as_completed(futures):
+        result = future.result()
+        if result:
+            for vehicle_class, speeds in result.items():
+                if vehicle_class not in vehicle_class_speeds:
+                    vehicle_class_speeds[vehicle_class] = []
+                vehicle_class_speeds[vehicle_class].extend(speeds)
+
+# Calculate the average speed per vehicle class
+average_speed_per_class = {vc: sum(speeds) / len(speeds) for vc, speeds in vehicle_class_speeds.items() if len(speeds) > 0}
+
+print("Average Speed (km/h) per Vehicle Class:")
+for vc, avg_speed in average_speed_per_class.items():
+    print(f"Vehicle Class {vc}: {avg_speed:.2f} km/h")
+
+# Save the average speeds to a CSV file
+average_speed_df = pd.DataFrame(list(average_speed_per_class.items()), columns=['Vehicle Class', 'Average Speed (km/h)'])
+average_speed_df.to_csv("average_speed_per_vehicle_class.csv", index=False)
+print("Average speed data saved to 'average_speed_per_vehicle_class.csv'")
+
+import matplotlib.pyplot as plt
+
+# Define a mapping of vehicle class numbers to descriptive titles
+vehicle_class_titles = {
+    1: "HA-PA (car or delivery van)",
+    2: "KAIP (truck, no trailer)",
+    3: "Buses",
+    4: "KAPP (semi-trailer truck)",
+    5: "KATP (truck with trailer)",
+    6: "HA + PK (car or delivery van with trailer)",
+    7: "HA + AV (car or delivery van with trailer or camper)"
+}
+
+# Filter out only rows with valid vehicle class numbers
+average_speed_df = average_speed_df[average_speed_df['Vehicle Class'].isin(vehicle_class_titles.keys())]
+
+# Plot the average speed per vehicle class with numbers on the x-axis
+plt.figure(figsize=(14, 7))
+bars = plt.bar(average_speed_df['Vehicle Class'], average_speed_df['Average Speed (km/h)'], color='skyblue')
+plt.title('Average Speed per Vehicle Class')
+plt.xlabel('Vehicle Class Number')
+plt.ylabel('Average Speed (km/h)')
+plt.xticks(rotation=45)
+
+# Add a legend mapping numbers to their descriptions
+handles = [plt.Rectangle((0, 0), 1, 1, color='skyblue') for _ in vehicle_class_titles]
+plt.legend(handles, [f"{num}: {desc}" for num, desc in vehicle_class_titles.items()], 
+           title='Vehicle Class Legend', bbox_to_anchor=(1.05, 1), loc='upper left')
+
+plt.tight_layout()
+
+plot_filename = 'average_speed_per_vehicle_class_plot.png'
+plt.savefig(plot_filename)
+plt.show()
+
+print(f"Plot saved as '{plot_filename}'")
+
+import requests
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
+from datetime import datetime
+import io
+import gc
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+print("Files will be saved in the following directory:", os.getcwd())
+
+# Headers for the CSV data
+headers = ['TMS point id', 'year', 'ordinal date', 'hour', 'minute', 'second', 
+           '1/100 second', 'length (m)', 'lane', 'direction', 'vehicle class', 
+           'speed (km/h)', 'faulty (0=valid record, 1=faulty record)', 
+           'total time (technical)', 'time interval (technical)', 'queue start (technical)']
+
+# Specify only columns needed for analysis to save memory
+use_columns = ['year', 'ordinal date', 'hour', 'vehicle class', 'speed (km/h)', 'faulty (0=valid record, 1=faulty record)']
+
+# Function to fetch and process data in chunks
+def fetch_data_in_chunks(lam_id, date):
+    try:
+        yearshort = date[2:4]
+        day_number = datetime.strptime(date, "%Y-%m-%d").strftime('%j')
+        url = f"https://tie.digitraffic.fi/api/tms/v1/history/raw/lamraw_{lam_id}_{yearshort}_{day_number}.csv"
+        response = requests.get(url, timeout=10)
+        
+        if response.status_code == 200:
+            chunk_size = 500_000  # Adjust based on system memory
+            df_iterator = pd.read_csv(
+                io.StringIO(response.text),
+                sep=';',
+                header=None,
+                names=headers,
+                usecols=use_columns,
+                chunksize=chunk_size,
+                dtype={
+                    'year': 'int16',
+                    'ordinal date': 'int16',
+                    'hour': 'int8',
+                    'vehicle class': 'int8',
+                    'speed (km/h)': 'float32',
+                    'faulty (0=valid record, 1=faulty record)': 'int8'
+                }
+            )
+            
+            for chunk in df_iterator:
+                # Filter for valid records and include only vehicle classes 1 to 7
+                chunk = chunk[(chunk['faulty (0=valid record, 1=faulty record)'] == 0) & (chunk['vehicle class'].between(1, 7))]
+                yield chunk
+        else:
+            print(f"Failed to fetch data for LAM ID {lam_id} on {date}")
+    except Exception as e:
+        print(f"Error fetching data for LAM ID {lam_id} on {date}: {e}")
+
+# Use ThreadPoolExecutor for parallel data fetching
+all_data_frames = []
+with ThreadPoolExecutor(max_workers=5) as executor:  # Adjust max_workers as needed
+    futures = [executor.submit(fetch_data_in_chunks, lam_id, date) for lam_id, data in station_summary.items() for date in data['Available Dates']]
+    
+    for future in as_completed(futures):
+        try:
+            result_generator = future.result()
+            for chunk in result_generator:
+                all_data_frames.append(chunk)
+                # Free up memory after each chunk is processed
+                gc.collect()
+        except Exception as e:
+            print(f"Error processing future result: {e}")
+
+if all_data_frames:
+    all_data = pd.concat(all_data_frames, ignore_index=True)
+
+    # Group data by hour and calculate total volume and average speed
+    hourly_volume = all_data.groupby('hour').size().reset_index(name='Total Volume')
+    hourly_avg_speed = all_data.groupby('hour')['speed (km/h)'].mean().reset_index(name='Average Speed (km/h)')
+
+    # Merge the two dataframes on 'hour'
+    hourly_data = pd.merge(hourly_volume, hourly_avg_speed, on='hour')
+
+    # Visualize the hourly traffic volume and save it
+    plt.figure(figsize=(14, 6))
+    plt.bar(hourly_data['hour'], hourly_data['Total Volume'], color='lightblue')
+    plt.xlabel('Hour of the Day')
+    plt.ylabel('Total Vehicle Volume')
+    plt.title('Total Vehicle Volume by Hour (Vehicle Classes 1-7)')
+    plt.xticks(range(0, 24))
+    plt.grid(axis='y', linestyle='--', alpha=0.5)
+    plt.savefig('hourly_vehicle_volume.png', dpi=300)  # Save as a PNG file
+    plt.show()
+
+    # Visualize the average speed by hour and save it
+    plt.figure(figsize=(14, 6))
+    plt.plot(hourly_data['hour'], hourly_data['Average Speed (km/h)'], marker='o', color='orange')
+    plt.xlabel('Hour of the Day')
+    plt.ylabel('Average Speed (km/h)')
+    plt.title('Average Vehicle Speed by Hour (Vehicle Classes 1-7)')
+    plt.xticks(range(0, 24))
+    plt.grid(axis='y', linestyle='--', alpha=0.5)
+    plt.savefig('hourly_average_speed.png', dpi=300)  # Save as a PNG file
+    plt.show()
+
+    print("Visualizations saved as 'hourly_vehicle_volume.png' and 'hourly_average_speed.png'")
+else:
+    print("No data available for analysis.")
+
+import requests
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
+from datetime import datetime
+import io
+import gc
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Print current working directory to confirm where files will be saved
+print("Files will be saved in the following directory:", os.getcwd())
+
+# Headers for the CSV data
+headers = ['TMS point id', 'year', 'ordinal date', 'hour', 'minute', 'second', 
+           '1/100 second', 'length (m)', 'lane', 'direction', 'vehicle class', 
+           'speed (km/h)', 'faulty (0=valid record, 1=faulty record)', 
+           'total time (technical)', 'time interval (technical)', 'queue start (technical)']
+
+# Specify only columns needed for analysis to save memory
+use_columns = ['year', 'ordinal date', 'hour', 'vehicle class', 'speed (km/h)', 'faulty (0=valid record, 1=faulty record)']
+
+# Function to fetch and process data in chunks
+def fetch_data_in_chunks(lam_id, date):
+    try:
+        yearshort = date[2:4]
+        day_number = datetime.strptime(date, "%Y-%m-%d").strftime('%j')
+        url = f"https://tie.digitraffic.fi/api/tms/v1/history/raw/lamraw_{lam_id}_{yearshort}_{day_number}.csv"
+        response = requests.get(url, timeout=10)
+        
+        if response.status_code == 200:
+            chunk_size = 500_000  # Adjust based on system memory
+            df_iterator = pd.read_csv(
+                io.StringIO(response.text),
+                sep=';',
+                header=None,
+                names=headers,
+                usecols=use_columns,
+                chunksize=chunk_size,
+                dtype={
+                    'year': 'int16',
+                    'ordinal date': 'int16',
+                    'hour': 'int8',
+                    'vehicle class': 'int8',
+                    'speed (km/h)': 'float32',
+                    'faulty (0=valid record, 1=faulty record)': 'int8'
+                }
+            )
+            
+            for chunk in df_iterator:
+                # Filter for valid records and include only vehicle classes 1 to 7
+                chunk = chunk[(chunk['faulty (0=valid record, 1=faulty record)'] == 0) & (chunk['vehicle class'].between(1, 7))]
+                yield chunk
+        else:
+            print(f"Failed to fetch data for LAM ID {lam_id} on {date}")
+    except Exception as e:
+        print(f"Error fetching data for LAM ID {lam_id} on {date}: {e}")
+
+# Use ThreadPoolExecutor for parallel data fetching
+all_data_frames = []
+with ThreadPoolExecutor(max_workers=5) as executor:  # Adjust max_workers as needed
+    futures = [executor.submit(fetch_data_in_chunks, lam_id, date) for lam_id, data in station_summary.items() for date in data['Available Dates']]
+    
+    for future in as_completed(futures):
+        try:
+            result_generator = future.result()
+            for chunk in result_generator:
+                all_data_frames.append(chunk)
+                # Free up memory after each chunk is processed
+                gc.collect()
+        except Exception as e:
+            print(f"Error processing future result: {e}")
+
+if all_data_frames:
+    all_data = pd.concat(all_data_frames, ignore_index=True)
+
+    # Group data by hour and calculate total volume and average speed
+    hourly_volume = all_data.groupby('hour').size().reset_index(name='Total Volume')
+    hourly_avg_speed = all_data.groupby('hour')['speed (km/h)'].mean().reset_index(name='Average Speed (km/h)')
+
+    # Merge the two dataframes on 'hour'
+    hourly_data = pd.merge(hourly_volume, hourly_avg_speed, on='hour')
+
+    # Create a combined plot with two y-axes
+    fig, ax1 = plt.subplots(figsize=(14, 7))
+
+    # Plot total vehicle volume (primary y-axis)
+    ax1.bar(hourly_data['hour'], hourly_data['Total Volume'], color='lightblue', label='Total Volume')
+    ax1.set_xlabel('Hour of the Day')
+    ax1.set_ylabel('Total Vehicle Volume', color='lightblue')
+    ax1.tick_params(axis='y', labelcolor='lightblue')
+    ax1.set_xticks(range(0, 24))
+    ax1.grid(axis='y', linestyle='--', alpha=0.5)
+
+    # Create a secondary y-axis for average speed
+    ax2 = ax1.twinx()
+    ax2.plot(hourly_data['hour'], hourly_data['Average Speed (km/h)'], marker='o', color='orange', label='Average Speed (km/h)')
+    ax2.set_ylabel('Average Speed (km/h)', color='orange')
+    ax2.tick_params(axis='y', labelcolor='orange')
+
+    # Set the title for the combined plot
+    plt.title('Total Vehicle Volume and Average Speed by Hour (Vehicle Classes 1-7)')
+
+    # Add a combined legend
+    fig.legend(loc='upper right', bbox_to_anchor=(1, 1), bbox_transform=ax1.transAxes)
+
+    # Adjust layout and save the figure
+    plt.tight_layout()
+    plt.savefig('combined_hourly_visualization.png', dpi=300)
+    plt.show()
+
+    # Print confirmation of saved file
+    print("Combined visualization saved as 'combined_hourly_visualization.png'")
+else:
+    print("No data available for analysis.")
+
+import requests
+import pandas as pd
+import io
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import matplotlib.pyplot as plt
+import os
+from requests.exceptions import ConnectionError, Timeout, HTTPError
+import numpy as np
+
+# Create a detailed report for each station and collect speed data
+detailed_report = []
+station_summary = {}
+
+# Define the station IDs and the date range
+station_ids = [20010, 20011, 20016, 20017, 20018]
+date_range = pd.date_range(start='2023-01-01', end='2023-12-31')
+
+# Function to fetch and process data with a retry mechanism
+def fetch_data_for_date(lam_id, single_date, retries=3):
+    yearshort = single_date.strftime('%y')
+    day_number = single_date.strftime('%j')
+    url = f"https://tie.digitraffic.fi/api/tms/v1/history/raw/lamraw_{lam_id}_{yearshort}_{day_number}.csv"
+    
+    for attempt in range(retries):
+        try:
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()  # Raise an error for HTTP issues
+            df = pd.read_csv(io.StringIO(response.text), sep=';', header=None, 
+                             names=['TMS point id', 'year', 'ordinal date', 'hour', 'minute', 'second', 
+                                    '1/100 second', 'length (m)', 'lane', 'direction', 'vehicle class', 
+                                    'speed (km/h)', 'faulty', 'total time (technical)', 
+                                    'time interval (technical)', 'queue start (technical)'])
+            
+            # Filter for valid records
+            valid_records = df[df['faulty'] == 0]
+            
+            # Optimize data types for memory efficiency
+            valid_records.loc[:, 'speed (km/h)'] = valid_records['speed (km/h)'].astype('float32')
+            valid_records.loc[:, 'length (m)'] = valid_records['length (m)'].astype('float32')
+            valid_records.loc[:, 'direction'] = valid_records['direction'].astype('int8')
+            
+            if not valid_records.empty:
+                return valid_records
+            break  # Exit loop if successful
+        except (ConnectionError, Timeout, HTTPError) as e:
+            print(f"Attempt {attempt + 1} failed for {url}: {e}")
+            if attempt < retries - 1:
+                continue  # Retry
+            else:
+                print(f"Failed after {retries} attempts: {url}")
+                return pd.DataFrame()  # Return empty DataFrame if all retries fail
+    return pd.DataFrame()
+
+# Directory to save processed data
+os.makedirs("processed_data", exist_ok=True)
+
+# Use ThreadPoolExecutor for parallel processing and process data by station
+for lam_id in station_ids:
+    all_data_frames = []
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = []
+        for single_date in date_range:
+            futures.append(executor.submit(fetch_data_for_date, lam_id, single_date))
+        
+        for future in as_completed(futures):
+            result = future.result()
+            if not result.empty:
+                all_data_frames.append(result)
+            
+            # Concatenate and save periodically to manage memory
+            if len(all_data_frames) > 30:  # Save every 30 data chunks
+                temp_df = pd.concat(all_data_frames, ignore_index=True)
+                temp_df.to_csv(f'processed_data/processed_data_{lam_id}_{single_date.month}.csv', index=False)
+                all_data_frames = []  # Clear memory
+
+    # Save any remaining data
+    if all_data_frames:
+        final_df = pd.concat(all_data_frames, ignore_index=True)
+        final_df.to_csv(f'processed_data/processed_data_{lam_id}_final.csv', index=False)
+
+# Combine processed data for analysis
+combined_files = [f for f in os.listdir("processed_data") if f.endswith('.csv')]
+all_data = pd.concat([pd.read_csv(f'processed_data/{file}') for file in combined_files], ignore_index=True)
+
+# Ensure 'all_data' contains the required columns
+if 'speed (km/h)' in all_data.columns and 'direction' in all_data.columns:
+    # Filter data for valid records (faulty = 0)
+    all_data = all_data[all_data['faulty'] == 0]
+    
+    # Calculate average speed and average length by direction (combine all vehicle classes)
+    average_speed_per_direction = all_data.groupby('direction')['speed (km/h)'].mean().to_dict()
+    average_length_per_direction = all_data.groupby('direction')['length (m)'].mean().to_dict()
+
+    # Define the lane count for each direction (example values)
+    lane_count_per_direction = {1: 3, 2: 3}
+
+    # Initialize dictionary to store estimated vehicle counts
+    vehicle_counts_per_direction = {}
+
+    for direction, avg_speed in average_speed_per_direction.items():
+        if direction not in average_length_per_direction:
+            print(f"Missing average length for Direction {direction}. Skipping.")
+            continue
+        
+        avg_length = average_length_per_direction[direction]
+        lane_count = lane_count_per_direction.get(direction, 1)  # Default to 1 if not found
+        vehicle_counts_per_direction[direction] = (
+            lane_count * ((avg_speed * 1000) / (avg_length + (avg_speed / 3.6)))
+        )
+
+    # Convert to DataFrame for visualization and saving
+    vehicle_counts_df = pd.DataFrame(
+        [(direction, count) for direction, count in vehicle_counts_per_direction.items()],
+        columns=['Direction', 'Estimated Vehicle Count']
+    )
+
+    # Display and plot data
+    print("Estimated Vehicle Count by Direction with Specific Lane Counts:")
+    print(vehicle_counts_df)
+
+    # Define two distinct shades of blue for directions 1 and 2
+    color_map = {1: 'dodgerblue', 2: 'mediumblue'}  # Custom blue shades for direction 1 and 2
+
+    # Plot Estimated Vehicle Count by Direction
+    plt.figure(figsize=(8, 6))
+    plt.bar(vehicle_counts_df['Direction'].astype(str), vehicle_counts_df['Estimated Vehicle Count'], 
+            color=[color_map[dir] for dir in vehicle_counts_df['Direction']], alpha=0.7)
+    
+    plt.xlabel("Direction")
+    plt.ylabel("Estimated Max Vehicle Count per Hour")
+    plt.title("Estimated Vehicle Count by Direction (Combined Vehicle Classes)")
+    plt.savefig("estimated_vehicle_count_by_direction.png", dpi=300)
+    plt.show()
+else:
+    print("Required columns for analysis are not present in the data.")
+
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Combine processed data for analysis
+combined_files = [f for f in os.listdir("processed_data") if f.endswith('.csv')]
+all_data = pd.concat([pd.read_csv(f'processed_data/{file}') for file in combined_files], ignore_index=True)
+
+# Ensure 'all_data' contains the required columns
+if 'direction' in all_data.columns and 'hour' in all_data.columns and 'ordinal date' in all_data.columns:
+    # Filter data for valid records (faulty = 0)
+    all_data = all_data[all_data['faulty'] == 0]
+
+    # Group data by ordinal date, hour, and direction to count vehicles per hour per day per direction
+    hourly_vehicle_counts = all_data.groupby(['ordinal date', 'hour', 'direction']).size().reset_index(name='Vehicle Count')
+
+    # Calculate the average vehicle count per hour for each direction by averaging across all available days
+    average_vehicle_counts_per_hour = hourly_vehicle_counts.groupby(['hour', 'direction'])['Vehicle Count'].mean().reset_index(name='Average Vehicle Count per Hour')
+
+    # Display the results
+    print("Average Vehicle Counts per Hour by Direction (Averaged over all available days):")
+    print(average_vehicle_counts_per_hour)
+
+    # Plot average vehicle counts per hour by direction
+    color_map = {1: 'dodgerblue', 2: 'mediumblue'}  # Custom blue shades for direction 1 and 2
+
+    plt.figure(figsize=(14, 7))
+    for direction in average_vehicle_counts_per_hour['direction'].unique():
+        subset = average_vehicle_counts_per_hour[average_vehicle_counts_per_hour['direction'] == direction]
+        plt.plot(subset['hour'], subset['Average Vehicle Count per Hour'], marker='o', label=f'Direction {direction}', color=color_map[direction])
+
+    plt.xlabel("Hour of the Day")
+    plt.ylabel("Average Vehicle Count per Hour")
+    plt.title("Average Vehicle Counts per Hour by Direction (Averaged over All Available Days)")
+    plt.xticks(range(0, 24))
+    plt.grid(axis='y', linestyle='--', alpha=0.5)
+    plt.legend()
+    plt.savefig("average_vehicle_count_per_hour_by_direction.png", dpi=300)
+    plt.show()
+else:
+    print("Required columns for analysis are not present in the data.")
