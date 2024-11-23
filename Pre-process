@@ -1,0 +1,389 @@
+pip install requests pandas
+
+# retrieve a list for all TMS stations
+import requests
+import pandas as pd
+
+stations_url = "https://tie.digitraffic.fi/api/tms/v1/stations"
+response = requests.get(stations_url)
+
+# Check if the request was successful
+if response.status_code == 200:
+    # Parse the response JSON
+    stations_data = response.json()
+    
+    # Extract TMS point IDs and other information
+    stations_list = []
+    
+    for station in stations_data['features']:
+        station_id = station['id']
+        station_name = station['properties']['name']
+        station_municipality = station['properties'].get('municipality', 'Unknown')
+        
+        stations_list.append({
+            'TMS Point ID': station_id,
+            'Station Name': station_name,
+            'Municipality': station_municipality
+        })
+    
+    stations_df = pd.DataFrame(stations_list)
+    print(stations_df.head())  # Show first 5 stations
+    
+    # Save the DataFrame to a CSV file
+    stations_df.to_csv('tms_stations_list.csv', index=False)
+    print("TMS stations list saved to 'tms_stations_list.csv'.")
+    
+else:
+    print(f"Failed to retrieve stations data. Status code: {response.status_code}")
+
+import requests
+import pandas as pd
+from datetime import datetime
+import matplotlib.pyplot as plt
+import os
+import io
+
+
+# Print the current working directory
+print("Files will be saved in the following directory:")
+print(os.getcwd())
+
+# List of specific TMS station IDs
+#station_ids = [
+    #20010, 20011, 20016, 20017, 20018, 20028, 23010, 23011,
+   # 23101, 23103, 23116, 23117, 23118, 23126, 23131, 23144,
+   # 23145, 23146, 23147, 23148, 23149, 23151, 23152, 23153,
+   # 23154, 23164, 23197
+#]
+station_ids = [
+    20010, 20011, 20016, 20017, 20018
+]
+
+# Define the date range
+start_date = datetime(2023, 1, 1)
+end_date = datetime(2023, 12, 31)
+date_range = pd.date_range(start=start_date, end=end_date)
+
+# Dictionary to store summary for each station
+station_summary = {}
+active_dates = {date.strftime('%Y-%m-%d'): 0 for date in date_range}
+
+# Loop through each station ID and check data availability for each date
+for lam_id in station_ids:
+    print(f"Checking data availability for TMS station ID: {lam_id}")
+    available_dates = []
+    
+    # Loop through the dates and check if data exists for each
+    for single_date in date_range:
+        yearshort = single_date.strftime('%y')
+        day_number = single_date.strftime('%j')
+        
+        # URL
+        url = f"https://tie.digitraffic.fi/api/tms/v1/history/raw/lamraw_{lam_id}_{yearshort}_{day_number}.csv"
+        response = requests.get(url)
+        
+        # If data is available, record the date
+        if response.status_code == 200:
+            available_date = single_date.strftime('%Y-%m-%d')
+            available_dates.append(available_date)
+            active_dates[available_date] += 1  # Count as an active sensor for that day
+        else:
+            print(f"No data for {single_date.strftime('%Y-%m-%d')} for station {lam_id}. Status code: {response.status_code}")
+    
+    # Store the summary for this station
+    station_summary[lam_id] = {
+        'Total Available Days': len(available_dates),
+        'Available Dates': available_dates
+    }
+
+# Save data availability summary to CSV
+summary_df = pd.DataFrame.from_dict(station_summary, orient='index')
+summary_file = 'station_data_availability_summary.csv'
+summary_df.to_csv(summary_file)
+
+print(f"Data availability summary saved to '{summary_file}'")
+
+# Count the number of active days for each station based on the 'station_summary' data
+station_active_days = {station_id: len(data['Available Dates']) for station_id, data in station_summary.items()}
+
+# Convert the results into a DataFrame for better presentation
+station_active_days_df = pd.DataFrame(list(station_active_days.items()), columns=['Station ID', 'Active Days'])
+
+# Save this summary to a CSV file
+station_active_days_file = 'station_active_days_summary.csv'
+station_active_days_df.to_csv(station_active_days_file, index=False)
+
+print(f"Data availability by active days per station saved to '{station_active_days_file}'")
+
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Initialize an empty DataFrame with dates as rows and stations as columns
+stations_df = pd.DataFrame(0, index=pd.to_datetime(date_range), columns=station_ids)
+
+# Populate the DataFrame with active status (1 if active, 0 if inactive)
+for lam_id, data in station_summary.items():
+    active_days = data['Available Dates']
+    for day in active_days:
+        stations_df.at[day, lam_id] = 1  # Mark as active (1) on available dates
+
+# Plotting active stations over time using a heatmap
+plt.figure(figsize=(14, 8))
+plt.imshow(stations_df.T, aspect='auto', cmap='Greens', interpolation='none')
+plt.colorbar(label="Sensor Status (1=Active, 0=Inactive)")
+plt.title("Station Data Availability Over Time")
+plt.xlabel("Date")
+plt.ylabel("TMS Station ID")
+
+# Generate month ticks aligned with the DataFrame index
+month_ticks = pd.date_range(stations_df.index.min(), stations_df.index.max(), freq='MS')
+tick_indices = [stations_df.index.get_loc(date) for date in month_ticks if date in stations_df.index]
+
+# Set x-axis ticks to display full months
+plt.xticks(tick_indices, month_ticks.strftime('%m/%y')[:len(tick_indices)], rotation=45)
+
+# Set y-axis labels to show station IDs
+plt.yticks(range(len(stations_df.columns)), stations_df.columns)
+
+# Save the plot as a PNG file
+output_path = "station_data_availability_heatmap.png"
+plt.savefig(output_path, format='png', dpi=300)
+plt.show()
+
+print(f"Plot saved as {output_path}")
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+import numpy as np
+
+# Define the start and end dates for the visualization
+start_date = "2023-01-01"
+end_date = "2023-12-31"
+
+# Initialize an empty DataFrame with dates as rows and stations as columns
+date_range = pd.date_range(start=start_date, end=end_date, freq='D')
+stations_df = pd.DataFrame(0, index=date_range, columns=station_ids)
+
+# Populate the DataFrame with active status (1 if active, 0 if inactive)
+for lam_id, data in station_summary.items():
+    active_days = data['Available Dates']
+    for day in active_days:
+        stations_df.at[day, lam_id] = 1  # Mark as active (1) on available dates
+
+# Filter the DataFrame to include only stations with at least one active day
+active_stations_df = stations_df.loc[:, (stations_df != 0).any(axis=0)]
+  
+plt.figure(figsize=(14, 8))
+
+num_stations = len(active_stations_df.columns)
+colors = np.concatenate([
+    plt.cm.Greens(np.linspace(0.4, 0.7, num_stations // 3)),  # Shades of green
+    plt.cm.Blues(np.linspace(0.4, 0.7, num_stations // 3)),   # Shades of blue
+    plt.cm.Greys(np.linspace(0.4, 0.7, num_stations // 3))    # Shades of grey
+])
+
+if len(colors) < num_stations:
+    colors = np.concatenate([colors, plt.cm.Greys(np.linspace(0.4, 0.7, num_stations - len(colors)))])
+
+for idx, station in enumerate(active_stations_df.columns):
+    active_periods = active_stations_df.index[active_stations_df[station] == 1]
+    if not active_periods.empty:
+        start, end = None, None
+        for day in active_periods:
+            # Start new bar if it's the beginning or if there's a gap from the last date
+            if start is None:
+                start = day
+            elif (day - end).days > 1:  # gap found, end previous bar
+                plt.barh(idx, end - start, left=start, color=colors[idx], height=0.5)
+                start = day  # start a new bar
+            end = day
+        # Add the final bar for the last period
+        plt.barh(idx, end - start + pd.Timedelta(days=1), left=start, color=colors[idx], height=0.5)
+
+# Set title and labels
+plt.title("Station Data Availability Over Time (Active Stations Only)", 
+          fontdict={'fontname': 'Times New Roman', 'fontsize': 16})
+plt.xlabel("Date", fontdict={'fontname': 'Times New Roman', 'fontsize': 12})
+plt.ylabel("TMS Station ID", fontdict={'fontname': 'Times New Roman', 'fontsize': 12})
+
+# Set y-ticks
+plt.yticks(range(len(active_stations_df.columns)), active_stations_df.columns, fontname="Times New Roman", fontsize=10)
+
+# Set x-axis ticks
+plt.gca().xaxis.set_major_locator(mdates.MonthLocator())
+plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m/%y'))
+plt.xlim(pd.to_datetime(start_date), pd.to_datetime(end_date))  # Ensures full-year display
+plt.xticks(rotation=45, fontname="Times New Roman", fontsize=10)
+
+# Save the output as an image file
+output_path = "station_data_availability_green_blue_grey_01_23.png"
+plt.savefig(output_path, format='png', dpi=300)
+plt.tight_layout()
+plt.show()
+
+print(f"Plot saved as {output_path}")
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+import numpy as np
+
+# Define the start and end dates for the visualization
+start_date = "2023-01-01"
+end_date = "2023-12-31"
+
+# Initialize an empty DataFrame with dates as rows and stations as columns
+date_range = pd.date_range(start=start_date, end=end_date, freq='D')
+stations_df = pd.DataFrame(0, index=date_range, columns=station_ids)
+
+# Populate the DataFrame with active status (1 if active, 0 if inactive)
+for lam_id, data in station_summary.items():
+    active_days = data['Available Dates']
+    for day in active_days:
+        stations_df.at[day, lam_id] = 1  # Mark as active (1) on available dates
+
+# Filter the DataFrame to include only stations with at least one active day
+active_stations_df = stations_df.loc[:, (stations_df != 0).any(axis=0)]
+
+# Set up the figure and axis for Gantt chart style
+plt.figure(figsize=(14, 8))
+
+# Generate custom color shades from 'Greens', 'Blues', and 'Greys' colormaps
+num_stations = len(active_stations_df.columns)
+colors = np.concatenate([
+    plt.cm.Greens(np.linspace(0.4, 0.7, num_stations // 3)),  # Shades of green
+    plt.cm.Blues(np.linspace(0.4, 0.7, num_stations // 3)),   # Shades of blue
+    plt.cm.Greys(np.linspace(0.4, 0.7, num_stations // 3))    # Shades of grey
+])
+
+# Ensure the colors array matches the number of stations (adjust if needed)
+if len(colors) < num_stations:
+    colors = np.concatenate([colors, plt.cm.Greys(np.linspace(0.4, 0.7, num_stations - len(colors)))])
+
+# Plot each station's active periods as horizontal bars with unique colors
+for idx, station in enumerate(active_stations_df.columns):
+    active_periods = active_stations_df.index[active_stations_df[station] == 1]
+    if not active_periods.empty:
+        start, end = None, None
+        for day in active_periods:
+            # Start new bar if it's the beginning or if there's a gap from the last date
+            if start is None:
+                start = day
+            elif (day - end).days > 1:  # gap found, end previous bar
+                plt.barh(idx, end - start, left=start, color=colors[idx], height=0.5)
+                start = day  # start a new bar
+            end = day
+        # Add the final bar for the last period
+        plt.barh(idx, end - start + pd.Timedelta(days=1), left=start, color=colors[idx], height=0.5)
+
+# Set title and labels with specified font
+plt.title("Station Data Availability Over Time (Active Stations Only)", 
+          fontdict={'fontname': 'Times New Roman', 'fontsize': 16})
+plt.xlabel("Date", fontdict={'fontname': 'Times New Roman', 'fontsize': 12})
+plt.ylabel("TMS Station ID", fontdict={'fontname': 'Times New Roman', 'fontsize': 12})
+
+# Set y-ticks to show station IDs with Times New Roman font
+plt.yticks(range(len(active_stations_df.columns)), active_stations_df.columns, fontname="Times New Roman", fontsize=10)
+
+# Set x-axis ticks to display full months and ensure full-year coverage
+plt.gca().xaxis.set_major_locator(mdates.MonthLocator())
+plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m/%y'))
+plt.xlim(pd.to_datetime(start_date), pd.to_datetime(end_date))  # Ensures full-year display
+plt.xticks(rotation=45, fontname="Times New Roman", fontsize=10)
+
+# Save the output as an image file
+output_path = "station_data_availability_green_blue_grey_01_23.png"
+plt.savefig(output_path, format='png', dpi=300)
+plt.tight_layout()
+plt.show()
+
+print(f"Plot saved as {output_path}")
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import requests
+import io
+from datetime import datetime
+
+# Define headers and expected criteria for outliers specifically for speed (km/h)
+headers = ['TMS point id', 'year', 'ordinal date', 'hour', 'minute', 'second', 
+           '1/100 second', 'length (m)', 'lane', 'direction', 'vehicle class', 
+           'speed (km/h)', 'faulty (0=valid record, 1=faulty record)', 
+           'total time (technical)', 'time interval (technical)', 'queue start (technical)']
+
+# Outlier criteria specifically for 'speed (km/h)'
+speed_min, speed_max = 2, 198
+
+# Initialize monthly counters across all stations
+outlier_counts_by_month = {month: 0 for month in range(1, 13)}
+total_records_by_month = {month: 0 for month in range(1, 13)}
+outlier_values_by_month = {month: [] for month in range(1, 13)}  # To store specific outlier values
+
+# Loop through each station and fetch data for analysis
+for lam_id, data in station_summary.items():
+    available_dates = data['Available Dates']
+    
+    for date in available_dates:
+        # Generate the URL to fetch the CSV for analysis
+        yearshort = date[2:4]
+        day_number = datetime.strptime(date, "%Y-%m-%d").strftime('%j')
+        
+        url = f"https://tie.digitraffic.fi/api/tms/v1/history/raw/lamraw_{lam_id}_{yearshort}_{day_number}.csv"
+        response = requests.get(url)
+        
+        if response.status_code == 200:
+            df = pd.read_csv(io.StringIO(response.text), sep=';', header=None, names=headers)
+            df['month'] = pd.to_datetime(df['ordinal date'], format='%j').dt.month
+            
+            # Count total records by month (only faulty records)
+            for month in df['month'].unique():
+                total_records_by_month[month] += len(df[(df['month'] == month) & (df['faulty (0=valid record, 1=faulty record)'] == 1)])
+                
+            # Identify outliers for speed (km/h) based on faulty records and min/max criteria
+            for month in range(1, 13):
+                # Filter for faulty records with speed outliers
+                outliers = df[(df['month'] == month) & 
+                              (df['faulty (0=valid record, 1=faulty record)'] == 1) & 
+                              ((df['speed (km/h)'] < speed_min) | (df['speed (km/h)'] > speed_max))]
+                outlier_counts_by_month[month] += len(outliers)
+                outlier_values_by_month[month].extend(outliers['speed (km/h)'].tolist())  # Store outlier values
+
+# Calculate monthly outlier percentages
+outlier_percentage_by_month = {}
+for month in range(1, 13):
+    if total_records_by_month[month] > 0:
+        outlier_percentage_by_month[month] = (outlier_counts_by_month[month] / total_records_by_month[month]) * 100
+    else:
+        outlier_percentage_by_month[month] = 0
+
+# Create a DataFrame for saving counts, percentages, and outlier values
+outlier_summary_df = pd.DataFrame({
+    'Month': range(1, 13),
+    'Outlier Count': [outlier_counts_by_month[month] for month in range(1, 13)],
+    'Outlier Percentage': [outlier_percentage_by_month[month] for month in range(1, 13)],
+    'Outlier Values': [outlier_values_by_month[month] for month in range(1, 13)]
+})
+
+# Save the outlier summary to a CSV file
+outlier_summary_df.to_csv("speed_outlier_summary_by_month.csv", index=False)
+
+# Plot the outlier values for speed (km/h) by month
+plt.figure(figsize=(12, 8))
+for month, values in outlier_values_by_month.items():
+    if values:  # Only plot if there are outliers for the month
+        plt.scatter([month] * len(values), values, alpha=0.6, label=f'Month {month}' if month == 1 else "")
+
+plt.xlabel("Month")
+plt.ylabel("Outlier Values (Speed in km/h)")
+plt.title("Outlier Values for Speed (km/h) by Month")
+plt.xticks(range(1, 13), ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"])
+plt.grid(True)
+plt.tight_layout()
+
+# Save the plot
+plt.savefig("speed_outlier_values_by_month.png", dpi=300)
+plt.show()
+
+print("Outlier summary saved as 'speed_outlier_summary_by_month.csv'")
+print("Plot saved as 'speed_outlier_values_by_month.png'")
