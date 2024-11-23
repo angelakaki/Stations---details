@@ -1,0 +1,30 @@
+import requests
+import pandas as pd
+
+# Define the base URL with the correct scheme
+base_url = "https://tie.digitraffic.fi/api/tms/v1/stations/"  # Replace 'example.com' with the actual domain
+station_ids = [20010, 20011, 20016, 20017, 20018]
+
+# List to hold the data for all stations
+data_list = []
+
+# Loop through each station ID and call the API
+for station_id in station_ids:
+    url = f"{base_url}{station_id}"
+    try:
+        response = requests.get(url)
+        response.raise_for_status()  # Raise an error for bad status codes
+        data = response.json()
+        # Add station ID to the data for context
+        data['station_id'] = station_id
+        data_list.append(data)
+    except requests.exceptions.RequestException as e:
+        print(f"Failed to get data for Station ID {station_id}: {e}")
+
+# Save the collected data to a CSV file if data is present
+if data_list:
+    df = pd.DataFrame(data_list)
+    df.to_csv('stations_data.csv', index=False)
+    print("Data saved to 'stations_data.csv'.")
+else:
+    print("No data available to save.")
