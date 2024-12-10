@@ -1,0 +1,299 @@
+!pip install requests pandas
+
+import requests
+import pandas as pd
+import io
+from datetime import datetime
+
+# Define the station ID
+station_id = 20018
+
+# Define the date range
+date_range = pd.date_range(start='2023-04-01', end='2023-12-31')
+
+# Function to fetch data for a given date
+def fetch_data_for_date(lam_id, single_date):
+    yearshort = single_date.strftime('%y')  # Last two digits of the year
+    day_number = single_date.strftime('%j')  # Ordinal day of the year
+    url = f"https://tie.digitraffic.fi/api/tms/v1/history/raw/lamraw_{lam_id}_{yearshort}_{day_number}.csv"
+    
+    try:
+        response = requests.get(url)
+        response.raise_for_status()  # Ensure HTTP errors are caught
+        
+        # Read the CSV data with headers
+        df = pd.read_csv(io.StringIO(response.text), sep=';', header=None, 
+                         names=['TMS point id', 'year', 'ordinal date', 'hour', 'minute', 'second', 
+                                '1/100 second', 'length (m)', 'lane', 'direction', 'vehicle class', 
+                                'speed (km/h)', 'faulty', 'total time (technical)', 
+                                'time interval (technical)', 'queue start (technical)'])
+        
+        # Filter for valid records where faulty == 0
+        valid_records = df[df['faulty'] == 0]
+        
+        # Save the valid records to a file named after the date
+        if not valid_records.empty:
+            file_name = f"station_{lam_id}_{single_date.strftime('%Y-%m-%d')}.csv"
+            valid_records.to_csv(file_name, index=False)
+            print(f"Saved data for {lam_id} on {single_date.strftime('%Y-%m-%d')} to {file_name}")
+    except Exception as e:
+        print(f"Failed to fetch data for station {lam_id} on {single_date.strftime('%Y-%m-%d')}: {e}")
+
+# Main function to fetch data for all dates in the range
+def main():
+    for single_date in date_range:
+        fetch_data_for_date(station_id, single_date)
+
+if __name__ == "__main__":
+    main()
+
+import pandas as pd
+import glob
+
+# Directory
+input_directory = r"C:\Users\eangelakaki"
+
+# Function to aggregate data
+def aggregate_data(file_path):
+    try:
+        print(f"Processing file: {file_path}")
+        
+        # Read the data
+        df = pd.read_csv(file_path)
+        print("Initial data:")
+        print(df.head())  # Debugging step
+        
+        # Keep only necessary columns
+        required_columns = ['year', 'ordinal date', 'hour', 'minute', 'second', 'direction', 'lane']
+        if not all(col in df.columns for col in required_columns):
+            print(f"Skipping file {file_path} due to missing required columns.")
+            return None
+        
+        # Adjust the year column to be a full year (e.g., 23 -> 2023)
+        df['year'] = df['year'].apply(lambda x: x + 2000 if x < 100 else x)
+        
+        # Convert 'ordinal date' to a proper date
+        df['date'] = pd.to_datetime(
+            df['year'].astype(str) + '-' + df['ordinal date'].astype(str),
+            format='%Y-%j', errors='coerce'
+        )
+        print("After converting 'ordinal date':")
+        print(df[['year', 'ordinal date', 'date']].head())  # Debugging step
+        
+        # Drop rows with invalid dates
+        df.dropna(subset=['date'], inplace=True)
+        
+        # Create a timestamp combining date, hour, minute, and second
+        df['timestamp'] = pd.to_datetime(
+            df['date'].astype(str) + ' ' +
+            df['hour'].astype(str).str.zfill(2) + ':' +
+            df['minute'].astype(str).str.zfill(2) + ':' +
+            df['second'].astype(str).str.zfill(2),
+            format='%Y-%m-%d %H:%M:%S', errors='coerce'
+        )
+        print("After creating 'timestamp':")
+        print(df[['timestamp']].head())  # Debugging step
+        
+        # Drop rows with invalid timestamps
+        df.dropna(subset=['timestamp'], inplace=True)
+        
+        # Round to the nearest hour
+        df['hour'] = df['timestamp'].dt.floor('h')
+        
+        # Group by hour, direction, and lane, count the number of vehicles
+        aggregated = (
+            df.groupby(['hour', 'direction', 'lane'])
+            .size()
+            .reset_index(name='vehicle_count')
+        )
+        print("Aggregated data:")
+        print(aggregated.head())  # Debugging step
+        
+        return aggregated
+    except Exception as e:
+        print(f"Error processing file {file_path}: {e}")
+        return None
+
+# Main function to process all files
+def main():
+    all_files = glob.glob(input_directory + r"\station_20018_*.csv")  # Match all relevant files
+    print(f"Files found: {all_files}")  # Debugging step
+    
+    aggregated_results = []
+    
+    for file_path in all_files:
+        result = aggregate_data(file_path)
+        if result is not None:
+            aggregated_results.append(result)
+    
+    # Combine all results into a single DataFrame
+    if aggregated_results:
+        final_df = pd.concat(aggregated_results, ignore_index=True)
+        
+        # Save the aggregated data to a new CSV
+        final_df.to_csv('hourly_aggregated_data_by_direction_and_lane.csv', index=False)
+        print("Aggregated data saved to 'hourly_aggregated_data_by_direction_and_lane.csv'.")
+    else:
+        print("No data to aggregate.")
+
+if __name__ == "__main__":
+    main()
+
+import pandas as pd
+import numpy as np
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+from tensorflow.keras import Input
+from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
+from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
+
+# Load the data
+processed_data = pd.read_csv('hourly_aggregated_data_by_direction_and_lane.csv')
+
+# Rename columns to match the expected input
+processed_data.rename(columns={'direction': 'item_id', 'lane': 'lane_id', 'hour': 'timestamp', 'vehicle_count': 'target'}, inplace=True)
+
+# Convert the timestamp to datetime and sort
+processed_data['timestamp'] = pd.to_datetime(processed_data['timestamp'])
+processed_data.sort_values('timestamp', inplace=True)
+
+# One-hot encode categorical variables (direction and lane)
+encoder = OneHotEncoder(sparse_output=False, drop='first')  # Fixed issue with 'sparse' parameter
+encoded_features = encoder.fit_transform(processed_data[['item_id', 'lane_id']])
+encoded_feature_names = encoder.get_feature_names_out(['item_id', 'lane_id'])
+
+# Combine one-hot encoded features with the target
+processed_data = pd.concat(
+    [processed_data, pd.DataFrame(encoded_features, columns=encoded_feature_names)], axis=1
+)
+
+# Parameters for forecasting
+context_window = 12  # Use 12 time steps as input
+forecast_horizon = 3  # Predict the next 3 time steps
+
+# Initialize lists to store RMSE and MAPE for each direction and lane
+rmse_list = []
+mape_list = []
+
+# Function to create sequences of data for LSTM
+def create_sequences(data, features, context_window, forecast_horizon):
+    X, y = [], []
+    for i in range(len(data) - context_window - forecast_horizon):
+        X.append(features[i:i + context_window])
+        y.append(data[i + context_window:i + context_window + forecast_horizon])
+    return np.array(X), np.array(y)
+
+# Iterate through each unique combination of direction and lane
+for (direction_id, lane_id), group_data in processed_data.groupby(['item_id', 'lane_id']):
+    # Extract data for the specific direction and lane
+    target_data = group_data['target'].values
+    additional_features = group_data[encoded_feature_names].values
+
+    # Check if there are enough data points for training
+    if len(target_data) < (context_window + forecast_horizon):
+        print(f"Skipping direction {direction_id}, lane {lane_id} due to insufficient data")
+        continue
+
+    # Normalize the target data (MinMax Scaling)
+    scaler_target = MinMaxScaler(feature_range=(0, 1))
+    target_data_scaled = scaler_target.fit_transform(target_data.reshape(-1, 1))
+
+    # Create input sequences with additional features
+    combined_features = np.hstack([target_data_scaled, additional_features])
+    X, y = create_sequences(target_data_scaled, combined_features, context_window, forecast_horizon)
+
+    # Split the data into train (80%) and test (20%)
+    train_size = int(len(X) * 0.8)
+    X_train, X_test = X[:train_size], X[train_size:]
+    y_train, y_test = y[:train_size], y[train_size:]
+
+    # Reshape X for LSTM input: [samples, time steps, features]
+    X_train = X_train.reshape((X_train.shape[0], X_train.shape[1], combined_features.shape[1]))
+    X_test = X_test.reshape((X_test.shape[0], X_test.shape[1], combined_features.shape[1]))
+
+    # Build LSTM model
+    model = Sequential()
+    model.add(Input(shape=(context_window, combined_features.shape[1])))  # Define input shape explicitly
+    model.add(LSTM(50, activation='relu', return_sequences=True))
+    model.add(LSTM(50, activation='relu'))
+    model.add(Dense(forecast_horizon))  # Dense layer to output the next 3 time steps
+    model.compile(optimizer='adam', loss='mse')
+
+    # Train the model
+    model.fit(X_train, y_train, epochs=100, batch_size=32, verbose=0)
+
+    # Make predictions on the test data (scaled)
+    y_pred_scaled = model.predict(X_test)
+
+    # Denormalize the predictions and the test data
+    y_test_inverse = scaler_target.inverse_transform(y_test.reshape(-1, 1)).reshape(-1, forecast_horizon)
+    y_pred_inverse = scaler_target.inverse_transform(y_pred_scaled.reshape(-1, 1)).reshape(-1, forecast_horizon)
+
+    # Compute RMSE and MAPE for each direction and lane on the denormalized values
+    rmse = np.sqrt(mean_squared_error(y_test_inverse[:, :forecast_horizon], y_pred_inverse[:, :forecast_horizon]))
+    mape = mean_absolute_percentage_error(y_test_inverse[:, :forecast_horizon], y_pred_inverse[:, :forecast_horizon])
+
+    # Store the metrics
+    rmse_list.append(rmse)
+    mape_list.append(mape)
+
+    print(f"Direction: {direction_id}, Lane: {lane_id} - RMSE: {rmse}, MAPE: {mape}")
+
+# Aggregate RMSE and MAPE over all directions and lanes
+if len(rmse_list) > 0 and len(mape_list) > 0:
+    rmse_mean = np.mean(rmse_list)
+    mape_mean = np.mean(mape_list)
+    print(f'LSTM - Mean RMSE across all directions and lanes: {rmse_mean}')
+    print(f'LSTM - Mean MAPE across all directions and lanes: {mape_mean}')
+else:
+    print(f"No directions and lanes were successfully processed.")
+
+
+import pandas as pd
+import matplotlib.pyplot as plt
+
+results = {
+    "Direction": [1, 1, 1, 2, 2, 2],
+    "Lane": [1, 2, 3, 4, 5, 6],
+    "RMSE": [66.302, 480.813, 39.191, 81.029, 91.202, 7.516],
+    "MAPE": [1.976, 0.558, 1.844, 3.368, 0.443, 1.616]
+}
+
+# Convert results to a DataFrame
+df_results = pd.DataFrame(results)
+
+# Visualization for RMSE
+plt.figure(figsize=(10, 6))
+for direction in df_results["Direction"].unique():
+    subset = df_results[df_results["Direction"] == direction]
+    plt.bar(subset["Lane"], subset["RMSE"], label=f"Direction {direction}")
+
+plt.title("RMSE by Direction and Lane")
+plt.xlabel("Lane")
+plt.ylabel("RMSE")
+plt.legend()
+plt.grid(True)
+
+# Save the RMSE plot
+plt.savefig("rmse_by_direction_and_lane.png", dpi=300)
+plt.show()
+
+# Visualization for MAPE
+plt.figure(figsize=(10, 6))
+for direction in df_results["Direction"].unique():
+    subset = df_results[df_results["Direction"] == direction]
+    plt.bar(subset["Lane"], subset["MAPE"], label=f"Direction {direction}")
+
+plt.title("MAPE by Direction and Lane")
+plt.xlabel("Lane")
+plt.ylabel("MAPE (%)")
+plt.legend()
+plt.grid(True)
+
+# Save the MAPE plot
+plt.savefig("mape_by_direction_and_lane.png", dpi=300)
+plt.show()
+
+# Summary Statistics
+print("Summary Statistics:")
+print(df_results.describe())
