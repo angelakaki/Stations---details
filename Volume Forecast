@@ -5,13 +5,12 @@ import pandas as pd
 import io
 from datetime import datetime
 
-# Define the station ID
+# station ID
 station_id = 20018
 
-# Define the date range
+# date range from April 1, 2023, to December 31, 2023
 date_range = pd.date_range(start='2023-04-01', end='2023-12-31')
 
-# Function to fetch data for a given date
 def fetch_data_for_date(lam_id, single_date):
     yearshort = single_date.strftime('%y')  # Last two digits of the year
     day_number = single_date.strftime('%j')  # Ordinal day of the year
@@ -31,7 +30,6 @@ def fetch_data_for_date(lam_id, single_date):
         # Filter for valid records where faulty == 0
         valid_records = df[df['faulty'] == 0]
         
-        # Save the valid records to a file named after the date
         if not valid_records.empty:
             file_name = f"station_{lam_id}_{single_date.strftime('%Y-%m-%d')}.csv"
             valid_records.to_csv(file_name, index=False)
@@ -39,7 +37,6 @@ def fetch_data_for_date(lam_id, single_date):
     except Exception as e:
         print(f"Failed to fetch data for station {lam_id} on {single_date.strftime('%Y-%m-%d')}: {e}")
 
-# Main function to fetch data for all dates in the range
 def main():
     for single_date in date_range:
         fetch_data_for_date(station_id, single_date)
@@ -50,20 +47,17 @@ if __name__ == "__main__":
 import pandas as pd
 import glob
 
-# Directory
-input_directory = r"C:\Users\eangelakaki"
+# Directory where the CSV files are saved
+input_directory = r"C:\Users\eangelakaki"  # Adjust this if files are saved in a specific folder
 
-# Function to aggregate data
 def aggregate_data(file_path):
     try:
         print(f"Processing file: {file_path}")
         
-        # Read the data
         df = pd.read_csv(file_path)
         print("Initial data:")
         print(df.head())  # Debugging step
         
-        # Keep only necessary columns
         required_columns = ['year', 'ordinal date', 'hour', 'minute', 'second', 'direction', 'lane']
         if not all(col in df.columns for col in required_columns):
             print(f"Skipping file {file_path} due to missing required columns.")
@@ -83,7 +77,7 @@ def aggregate_data(file_path):
         # Drop rows with invalid dates
         df.dropna(subset=['date'], inplace=True)
         
-        # Create a timestamp combining date, hour, minute, and second
+        # Create a timestamp
         df['timestamp'] = pd.to_datetime(
             df['date'].astype(str) + ' ' +
             df['hour'].astype(str).str.zfill(2) + ':' +
@@ -114,7 +108,6 @@ def aggregate_data(file_path):
         print(f"Error processing file {file_path}: {e}")
         return None
 
-# Main function to process all files
 def main():
     all_files = glob.glob(input_directory + r"\station_20018_*.csv")  # Match all relevant files
     print(f"Files found: {all_files}")  # Debugging step
@@ -126,11 +119,9 @@ def main():
         if result is not None:
             aggregated_results.append(result)
     
-    # Combine all results into a single DataFrame
     if aggregated_results:
         final_df = pd.concat(aggregated_results, ignore_index=True)
         
-        # Save the aggregated data to a new CSV
         final_df.to_csv('hourly_aggregated_data_by_direction_and_lane.csv', index=False)
         print("Aggregated data saved to 'hourly_aggregated_data_by_direction_and_lane.csv'.")
     else:
@@ -138,6 +129,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+#LSTM Method Volume Prediction
 
 import pandas as pd
 import numpy as np
@@ -147,7 +141,6 @@ from tensorflow.keras import Input
 from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
 from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 
-# Load the data
 processed_data = pd.read_csv('hourly_aggregated_data_by_direction_and_lane.csv')
 
 # Rename columns to match the expected input
@@ -157,25 +150,20 @@ processed_data.rename(columns={'direction': 'item_id', 'lane': 'lane_id', 'hour'
 processed_data['timestamp'] = pd.to_datetime(processed_data['timestamp'])
 processed_data.sort_values('timestamp', inplace=True)
 
-# One-hot encode categorical variables (direction and lane)
 encoder = OneHotEncoder(sparse_output=False, drop='first')  # Fixed issue with 'sparse' parameter
 encoded_features = encoder.fit_transform(processed_data[['item_id', 'lane_id']])
 encoded_feature_names = encoder.get_feature_names_out(['item_id', 'lane_id'])
 
-# Combine one-hot encoded features with the target
 processed_data = pd.concat(
     [processed_data, pd.DataFrame(encoded_features, columns=encoded_feature_names)], axis=1
 )
 
-# Parameters for forecasting
 context_window = 12  # Use 12 time steps as input
 forecast_horizon = 3  # Predict the next 3 time steps
 
-# Initialize lists to store RMSE and MAPE for each direction and lane
 rmse_list = []
 mape_list = []
 
-# Function to create sequences of data for LSTM
 def create_sequences(data, features, context_window, forecast_horizon):
     X, y = [], []
     for i in range(len(data) - context_window - forecast_horizon):
@@ -183,7 +171,6 @@ def create_sequences(data, features, context_window, forecast_horizon):
         y.append(data[i + context_window:i + context_window + forecast_horizon])
     return np.array(X), np.array(y)
 
-# Iterate through each unique combination of direction and lane
 for (direction_id, lane_id), group_data in processed_data.groupby(['item_id', 'lane_id']):
     # Extract data for the specific direction and lane
     target_data = group_data['target'].values
@@ -219,21 +206,16 @@ for (direction_id, lane_id), group_data in processed_data.groupby(['item_id', 'l
     model.add(Dense(forecast_horizon))  # Dense layer to output the next 3 time steps
     model.compile(optimizer='adam', loss='mse')
 
-    # Train the model
     model.fit(X_train, y_train, epochs=100, batch_size=32, verbose=0)
 
-    # Make predictions on the test data (scaled)
     y_pred_scaled = model.predict(X_test)
 
-    # Denormalize the predictions and the test data
     y_test_inverse = scaler_target.inverse_transform(y_test.reshape(-1, 1)).reshape(-1, forecast_horizon)
     y_pred_inverse = scaler_target.inverse_transform(y_pred_scaled.reshape(-1, 1)).reshape(-1, forecast_horizon)
 
-    # Compute RMSE and MAPE for each direction and lane on the denormalized values
     rmse = np.sqrt(mean_squared_error(y_test_inverse[:, :forecast_horizon], y_pred_inverse[:, :forecast_horizon]))
     mape = mean_absolute_percentage_error(y_test_inverse[:, :forecast_horizon], y_pred_inverse[:, :forecast_horizon])
 
-    # Store the metrics
     rmse_list.append(rmse)
     mape_list.append(mape)
 
@@ -252,14 +234,14 @@ else:
 import pandas as pd
 import matplotlib.pyplot as plt
 
+# data for Visualization
 results = {
     "Direction": [1, 1, 1, 2, 2, 2],
     "Lane": [1, 2, 3, 4, 5, 6],
-    "RMSE": [66.302, 480.813, 39.191, 81.029, 91.202, 7.516],
-    "MAPE": [1.976, 0.558, 1.844, 3.368, 0.443, 1.616]
+    "RMSE": [66.36836564265487, 454.9379612865, 38.57374140318034, 81.27722441985647, 87.9036615498206, 7.063898611583374],
+    "MAPE": [2.139939300330916, 0.5306867993943095, 1.665716057328795, 2.399831719742602, 0.4767614276609864, 1.2213014857732853]
 }
 
-# Convert results to a DataFrame
 df_results = pd.DataFrame(results)
 
 # Visualization for RMSE
@@ -274,7 +256,6 @@ plt.ylabel("RMSE")
 plt.legend()
 plt.grid(True)
 
-# Save the RMSE plot
 plt.savefig("rmse_by_direction_and_lane.png", dpi=300)
 plt.show()
 
@@ -290,10 +271,260 @@ plt.ylabel("MAPE (%)")
 plt.legend()
 plt.grid(True)
 
-# Save the MAPE plot
 plt.savefig("mape_by_direction_and_lane.png", dpi=300)
 plt.show()
 
 # Summary Statistics
 print("Summary Statistics:")
 print(df_results.describe())
+
+
+# Further investigation for Direction 2 / Lane 5 and Direction 1 / Lane 2
+
+# Filter data for Direction 1/Lane 2 and Direction 2/Lane 2
+data_lane2_direction1 = processed_data[(processed_data['item_id'] == 1) & (processed_data['lane_id'] == 2)]
+data_lane2_direction2 = processed_data[(processed_data['item_id'] == 2) & (processed_data['lane_id'] == 5)]
+
+def analyze_data(data, description):
+    print(f"--- Analysis for {description} ---")
+    
+    print(data['target'].describe())
+    
+    zero_count = (data['target'] == 0).sum()
+    print(f"Number of zero vehicle counts: {zero_count}")
+    
+    Q1 = data['target'].quantile(0.25)
+    Q3 = data['target'].quantile(0.75)
+    IQR = Q3 - Q1
+    outlier_condition = (data['target'] < (Q1 - 1.5 * IQR)) | (data['target'] > (Q3 + 1.5 * IQR))
+    outliers = data[outlier_condition]
+    
+    print(f"Number of outliers: {outliers.shape[0]}")
+    print(f"Outliers:\n{outliers}")
+
+# Analyze data for both directions
+analyze_data(data_lane2_direction1, "Direction 1 / Lane 2")
+analyze_data(data_lane2_direction2, "Direction 2 / Lane 5")
+
+
+# Redefine the subsets for Direction 2 / Lane 5 and Direction 1 / Lane 2
+direction1_lane2 = processed_data[(processed_data['item_id'] == 1) & (processed_data['lane_id'] == 2)]
+direction2_lane5 = processed_data[(processed_data['item_id'] == 2) & (processed_data['lane_id'] == 5)]
+
+def identify_and_save_peak_hours(data, description, file_prefix):
+    # Make a copy of the data to avoid modifying the original DataFrame
+    data = data.copy()
+    
+    # Extract the hour of the day
+    data['hour'] = data['timestamp'].dt.hour
+    
+    # Calculate the average vehicle count per hour
+    hourly_avg = data.groupby('hour')['target'].mean()
+    
+    # Define a threshold for peak hours (e.g., average + 1 standard deviation)
+    threshold = hourly_avg.mean() + hourly_avg.std()
+    
+    # Identify peak hours
+    peak_hours = hourly_avg[hourly_avg > threshold]
+    
+    print(f"--- Peak Hours for {description} ---")
+    print(f"Threshold for Peak Hours: {threshold:.2f}")
+    print(peak_hours)
+    
+    # Visualization
+    plt.figure(figsize=(10, 6))
+    plt.plot(hourly_avg.index, hourly_avg.values, marker='o', label='Average Vehicle Count per Hour')
+    plt.axhline(y=threshold, color='r', linestyle='--', label=f"Threshold: {threshold:.2f}")
+    plt.scatter(peak_hours.index, peak_hours.values, color='r', label='Peak Hours', zorder=5)
+    plt.title(f"Average Vehicle Count by Hour - {description}")
+    plt.xlabel("Hour of the Day")
+    plt.ylabel("Average Vehicle Count")
+    plt.xticks(range(0, 24))  # Ensure all hours are shown on the x-axis
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    
+    
+    file_name = f"{file_prefix}_peak_hours.png"
+    plt.savefig(file_name, dpi=300)
+    plt.close()
+    print(f"Visualization saved as {file_name}")
+
+identify_and_save_peak_hours(direction2_lane5, "Direction 2 / Lane 5", "direction2_lane5")
+identify_and_save_peak_hours(direction1_lane2, "Direction 1 / Lane 2", "direction1_lane2")
+
+
+import matplotlib.pyplot as plt
+
+def plot_and_save_distributions(data, description, file_prefix):
+    plt.figure(figsize=(12, 6))
+    
+    # Histogram
+    plt.subplot(1, 2, 1)
+    plt.hist(data['target'], bins=30, edgecolor='k', alpha=0.7)
+    plt.title(f"Histogram of Vehicle Count - {description}")
+    plt.xlabel("Vehicle Count")
+    plt.ylabel("Frequency")
+    
+    # Box Plot
+    plt.subplot(1, 2, 2)
+    plt.boxplot(data['target'], vert=False, patch_artist=True, boxprops=dict(facecolor='lightblue'))
+    plt.title(f"Box Plot of Vehicle Count - {description}")
+    plt.xlabel("Vehicle Count")
+    
+    plt.tight_layout()
+    
+    file_name = f"{file_prefix}_distribution.png"
+    plt.savefig(file_name, dpi=300)
+    print(f"Saved {description} distribution plot as '{file_name}'")
+    plt.show()
+
+plot_and_save_distributions(data_lane2_direction1, "Direction 1 / Lane 2", "direction1_lane2")
+plot_and_save_distributions(data_lane2_direction2, "Direction 2 / Lane 5", "direction2_lane5")
+
+
+#XGBoost Method Volume Prediction
+
+!pip install xgboost
+import pandas as pd
+import numpy as np
+from xgboost import XGBRegressor
+from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
+from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
+from sklearn.model_selection import train_test_split
+
+processed_data = pd.read_csv('hourly_aggregated_data_by_direction_and_lane.csv')
+
+# Rename columns to match the expected input
+processed_data.rename(columns={'direction': 'item_id', 'lane': 'lane_id', 'hour': 'timestamp', 'vehicle_count': 'target'}, inplace=True)
+
+# Convert the timestamp to datetime and sort
+processed_data['timestamp'] = pd.to_datetime(processed_data['timestamp'])
+processed_data.sort_values('timestamp', inplace=True)
+
+encoder = OneHotEncoder(sparse_output=False, drop='first')
+encoded_features = encoder.fit_transform(processed_data[['item_id', 'lane_id']])
+encoded_feature_names = encoder.get_feature_names_out(['item_id', 'lane_id'])
+
+processed_data = pd.concat(
+    [processed_data, pd.DataFrame(encoded_features, columns=encoded_feature_names)], axis=1
+)
+
+context_window = 12  # Use 12 time steps as input
+forecast_horizon = 3  # Predict the next 3 time steps
+
+# Function to create sequences of data for XGBoost
+def create_sequences(data, features, context_window, forecast_horizon):
+    X, y = [], []
+    for i in range(len(data) - context_window - forecast_horizon):
+        X.append(features[i:i + context_window].flatten())  # Flatten for XGBoost
+        y.append(data[i + context_window:i + context_window + forecast_horizon])
+    return np.array(X), np.array(y)
+
+rmse_list = []
+mape_list = []
+
+for (direction_id, lane_id), group_data in processed_data.groupby(['item_id', 'lane_id']):
+    # Extract data for the specific direction and lane
+    target_data = group_data['target'].values
+    additional_features = group_data[encoded_feature_names].values
+
+    # Check if there are enough data points for training
+    if len(target_data) < (context_window + forecast_horizon):
+        print(f"Skipping direction {direction_id}, lane {lane_id} due to insufficient data")
+        continue
+
+    # Normalize the target data (MinMax Scaling)
+    scaler_target = MinMaxScaler(feature_range=(0, 1))
+    target_data_scaled = scaler_target.fit_transform(target_data.reshape(-1, 1))
+
+    # Create input sequences with additional features
+    combined_features = np.hstack([target_data_scaled, additional_features])
+    X, y = create_sequences(target_data_scaled, combined_features, context_window, forecast_horizon)
+
+    # Split the data into train (80%) and test (20%)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    # Train an XGBoost model for each time step in the forecast horizon
+    y_pred = []
+    for step in range(forecast_horizon):
+    
+        model = XGBRegressor(objective='reg:squarederror', n_estimators=100, max_depth=5, learning_rate=0.1, random_state=42)
+        model.fit(X_train, y_train[:, step])
+        
+        y_pred_step = model.predict(X_test)
+        y_pred.append(y_pred_step)
+    
+    y_pred = np.column_stack(y_pred)
+
+    y_test_inverse = scaler_target.inverse_transform(y_test.flatten().reshape(-1, 1)).reshape(-1, forecast_horizon)
+    y_pred_inverse = scaler_target.inverse_transform(y_pred.flatten().reshape(-1, 1)).reshape(-1, forecast_horizon)
+
+    rmse = np.sqrt(mean_squared_error(y_test_inverse[:, :forecast_horizon], y_pred_inverse[:, :forecast_horizon]))
+    mape = mean_absolute_percentage_error(y_test_inverse[:, :forecast_horizon], y_pred_inverse[:, :forecast_horizon])
+
+    rmse_list.append(rmse)
+    mape_list.append(mape)
+
+    print(f"Direction: {direction_id}, Lane: {lane_id} - RMSE: {rmse}, MAPE: {mape}")
+
+if len(rmse_list) > 0 and len(mape_list) > 0:
+    rmse_mean = np.mean(rmse_list)
+    mape_mean = np.mean(mape_list)
+    print(f'XGBoost - Mean RMSE across all directions and lanes: {rmse_mean}')
+    print(f'XGBoost - Mean MAPE across all directions and lanes: {mape_mean}')
+else:
+    print(f"No directions and lanes were successfully processed.")
+
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# data for visualization
+results_data = {
+    "Direction": [1, 1, 1, 2, 2, 2],
+    "Lane": [1, 2, 3, 4, 5, 6],
+    "RMSE": [108.06100920605205, 78.4363938401071, 33.25997851894057, 65.38278904698204, 55.27008289725295, 8.10754461936843],
+    "MAPE": [1.0448260446224094, 0.21175402299664348, 0.7349954123674655, 1.3732462429593892, 0.19599886887381043, 0.7174669280203138]
+}
+
+results_df = pd.DataFrame(results_data)
+
+plt.figure(figsize=(10, 6))
+for idx, direction in enumerate(results_df["Direction"].unique()):
+    subset = results_df[results_df["Direction"] == direction]
+    plt.bar(
+        subset["Lane"],
+        subset["RMSE"],
+        color='#1f77b4' if idx == 0 else '#2ca02c',  # Blue for Direction 1, Green for Direction 2
+        label=f"Direction {direction}"
+    )
+
+plt.title("RMSE by Direction and Lane (XGBoost)")
+plt.xlabel("Lane")
+plt.ylabel("RMSE")
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+rmse_fig_path = "xgboost_rmse_by_direction_and_lane.png"
+plt.savefig(rmse_fig_path, dpi=300)
+plt.show()
+
+plt.figure(figsize=(10, 6))
+for idx, direction in enumerate(results_df["Direction"].unique()):
+    subset = results_df[results_df["Direction"] == direction]
+    plt.bar(
+        subset["Lane"],
+        subset["MAPE"],
+        color='#1f77b4' if idx == 0 else '#2ca02c',  # Blue for Direction 1, Green for Direction 2
+        label=f"Direction {direction}"
+    )
+
+plt.title("MAPE by Direction and Lane (XGBoost)")
+plt.xlabel("Lane")
+plt.ylabel("MAPE (%)")
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+mape_fig_path = "xgboost_mape_by_direction_and_lane.png"
+plt.savefig(mape_fig_path, dpi=300)
+plt.show()
